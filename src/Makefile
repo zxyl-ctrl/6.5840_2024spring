@@ -1,0 +1,17 @@
+run_mr_worker:
+	@go build -buildmode=plugin -o ./mrapps/plugin/ ./mrapps/wc.go 
+	@go run ./main/mrworker.go ./mrapps/plugin/wc.so
+
+run_mr_coo:
+	@go run ./main/mrcoordinator.go ./main/pg-being_ernest.txt ./main/pg-dorian_gray.txt ./main/pg-frankenstein.txt ./main/pg-grimm.txt ./main/pg-huckleberry_finn.txt ./main/pg-metamorphosis.txt ./main/pg-sherlock_holmes.txt ./main/pg-tom_sawyer.txt
+
+run_test_kvsrv:
+	@go test ./kvsrv -count=1
+
+run_test_raft:
+	@go test ./raft -run Test.*3A -count=1
+	@go test ./raft -run Test.*3B -count=1
+
+run_test_rafttemp:
+	@go test ./RaftTemp -run Test.*3A -count=1
+	@go test ./RaftTemp -run Test.*3B -count=1
