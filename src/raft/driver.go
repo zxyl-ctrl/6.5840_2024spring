@@ -31,11 +31,13 @@ func (rf *Raft) ticker() {
 		oldTime := time.Now()
 		time.Sleep(time.Duration(rand.Int63()%(MaxVoteTime-MinVoteTime)+MinVoteTime) * time.Millisecond)
 		rf.mu.Lock()
+		// 设置Before防止因为执行其他事务，不便于进行选举
 		if rf.heartbeatTime.Before(oldTime) && rf.state != LEADER {
 			rf.state = CANDIDATE
 			rf.votedFor = rf.me
 			rf.votedNum = 1
 			rf.currentTerm += 1
+			rf.persist()
 			rf.broadcastRequestVote()
 			rf.heartbeatTime = time.Now()
 		}
@@ -43,7 +45,7 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) SAE() { // 与AppendEntry相关
+func (rf *Raft) SAE() {
 	for !rf.killed() {
 		time.Sleep(HeartbeatSleep * time.Millisecond)
 		rf.mu.Lock()
@@ -61,15 +63,10 @@ func (rf *Raft) commitedTicker() { //第0条默认日志不需要提交，否则
 		time.Sleep(time.Millisecond * AppliedSleep)
 		rf.mu.Lock()
 
-		if rf.lastApplied >= rf.commitIndex {
-			rf.mu.Unlock()
-			continue
-		}
-
 		msgs := []ApplyMsg{}
-		for rf.lastApplied < rf.commitIndex && rf.lastApplied < rf.getLastIndex() && !rf.killed() {
+		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied += 1
-			log := rf.logs[rf.lastApplied]
+			log := rf.logs[rf.lastApplied-rf.lastIncludedIndex]
 			msgs = append(msgs, ApplyMsg{
 				CommandValid: true,
 				CommandIndex: rf.lastApplied,

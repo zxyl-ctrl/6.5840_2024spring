@@ -11,7 +11,11 @@ run_test_kvsrv:
 run_test_raft:
 	@go test ./raft -run Test.*3A -count=1
 	@go test ./raft -run Test.*3B -count=1
+	@go test ./raft -run Test.*3C -count=1
+	@go test ./raft -run Test.*3D -count=1
 
-run_test_rafttemp:
-	@go test ./RaftTemp -run Test.*3A -count=1
-	@go test ./RaftTemp -run Test.*3B -count=1
+run_test_raft_temp:
+	#@go test ./rafttemp -run Test.*3A -count=1
+	#@go test ./rafttemp -run Test.*3B -count=1
+	#@go test ./rafttemp -run Test.*3C -count=1
+	@go test ./rafttemp -run Test.*3D -count=1

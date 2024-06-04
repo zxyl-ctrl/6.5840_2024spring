@@ -5,18 +5,18 @@ import (
 )
 
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int        // 新日志条目之前一个日志条目的索引
-	PrevLogTerm  int        // 新日志条目之前一个日志条目的任期
-	Entries      []LogEntry // 需要复制的日志条目，当用于发送heartbeat消息时为空
-	LeaderCommit int        // 领导者已经提交的最大日志索引
+	Term         int        // 领导者的当前任期
+	LeaderId     int        // 领导者id
+	PrevLogIndex int        // 发送日志上一条日志的Index
+	PrevLogTerm  int        // 发送日志上一条日志的Term
+	Entries      []LogEntry // Log数组，当发送心跳时为空
+	LeaderCommit int        // 领导者已经Commit的最大日志索引
 }
 
 type AppendEntriesReply struct {
-	Term        int // 用于当接收方发现发送方任期陈旧时，以使得Leader自己退出和更新任期
-	Success     bool
-	UpNextIndex int
+	Term        int  // Follower的当前Term，用于当接收方发现发送方任期陈旧时，以使得Leader自己退出和更新任期
+	Success     bool // 是否成功复制日志
+	UpNextIndex int  // 用于失败时返回Leader下一个应当发送的Index，为-1时白哦是当前操作不合理
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -31,40 +31,46 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// fmt.Println(getGID(), "0")
 	reply.UpNextIndex = -1
 	reply.Term = args.Term
 
 	rf.state = FOLLOWER
 	rf.currentTerm = args.Term
-	// rf.votedFor = -1
-	rf.votedNum = 0
-	rf.heartbeatTime = time.Now()
+	rf.persist()
+	rf.heartbeatTime = time.Now() // 设置心跳，避免处理时投票
 
 	// fmt.Println(getGID(), "1", args, rf.logs)
 
-	// 检查日志一致性
-	// 如果传递参数的最小index比当前节点的日志的最大Index都大，或者最后一个日志的任期不同，
-	// 表明该节点的日志在之前就不同，Leader需要调整更小的PrevLogIndex
-	if rf.getLastIndex() < args.PrevLogIndex {
-		reply.UpNextIndex = rf.getLastIndex()
+	// 处理发送Entry延迟但是已经更新过Snapshot的情况
+	// 可以赋值给下面两个值均可，前者在探查正确的Index时需要耗费时间，后者在复制上需要耗费时间
+	if rf.lastIncludedIndex > args.PrevLogIndex {
+		reply.UpNextIndex = rf.getLastIndex() // rf.lastIncludedIndex + 1
 		return
 	}
-	// fmt.Println(getGID(), "2")
-	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
-		// 如果上一条日志的任期不同，需要向前搜索，找到任期相同的日志
-		reply.UpNextIndex = rf.getMinIndexInOneTerm(rf.logs[args.PrevLogIndex].Term, args.PrevLogIndex)
+
+	// NOTE：在不能成功完成日志的复制时而进行不断的搜索时，args.PrevLohIndex必然是不断减少的
+	// 因为重复的日志即使多复制一点也不会引起状态改变
+
+	// 如果当前节点的最后一个日志的下标比上一条发送的日志的下标要小，设置返回的reply.UpNextIndex
+	// 为当前最后的日志下标 + 1
+	if rf.getLastIndex() < args.PrevLogIndex {
+		reply.UpNextIndex = rf.getLastIndex() + 1 // rf.getLastIndex()
+		return
+	}
+	if rf.restoreLogTerm(args.PrevLogIndex) != args.PrevLogTerm {
+		// 如果上一条日志的任期不同，需要向前搜索，找到任期不同的日志对应的下标
+		reply.UpNextIndex = rf.getMinIndexInOneTerm(rf.restoreLogTerm(args.PrevLogIndex),
+			args.PrevLogIndex)
 		return
 	}
 
 	// fmt.Println(getGID(), "3", rf.logs)
 	reply.Success = true
-	rf.logs = append(rf.logs[:args.PrevLogIndex+1], args.Entries...)
-
+	rf.logs = append(rf.logs[:args.PrevLogIndex+1-rf.lastIncludedIndex], args.Entries...)
+	rf.persist()
 	if rf.commitIndex < args.LeaderCommit {
 		rf.commitIndex = minInt(args.LeaderCommit, rf.getLastIndex())
 	}
-
 	// fmt.Println(getGID(), "status:", rf.commitIndex, rf.logs)
 }
 
@@ -74,13 +80,24 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) broadcastAppendEntries() {
-	// fmt.Println("Start Entries", len(rf.logs), rf.logs, rf.currentTerm, rf.matchIndex, rf.nextIndex, rf.me)
 	for server := range rf.peers {
-		if server != rf.me && rf.state == LEADER {
+		if server != rf.me { // 不能够判断是否是LEADER，因为没上锁
 			go func(server int) {
 				rf.mu.Lock()
+
+				if rf.state != LEADER {
+					rf.mu.Unlock()
+					return
+				}
+				// 发现Follower的matchIndex[i]落后自己，发送快照
+				if rf.nextIndex[server]-1 < rf.lastIncludedIndex {
+					go rf.sendSnapShot(server)
+					rf.mu.Unlock()
+					return
+				}
+
 				prevLogIndex := rf.nextIndex[server] - 1
-				prevLogTerm := rf.logs[prevLogIndex].Term
+				prevLogTerm := rf.restoreLogTerm(prevLogIndex)
 				args := &AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
@@ -89,7 +106,7 @@ func (rf *Raft) broadcastAppendEntries() {
 					LeaderCommit: rf.commitIndex,
 				}
 				if rf.nextIndex[server] <= rf.getLastIndex() {
-					args.Entries = rf.logs[rf.nextIndex[server]:]
+					args.Entries = rf.logs[rf.nextIndex[server]-rf.lastIncludedIndex:]
 				} else {
 					args.Entries = []LogEntry{}
 				}
@@ -101,34 +118,39 @@ func (rf *Raft) broadcastAppendEntries() {
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
 
-					// fmt.Println("args:", getGID(), args)
-					// fmt.Println("reply:", getGID(), reply)
-					if rf.state != LEADER || reply.Term < rf.currentTerm || rf.currentTerm != args.Term {
+					// 不是领导者；或者响应延迟导致reply的任期<当前任期
+					if rf.state != LEADER || reply.Term < rf.currentTerm {
 						return
 					}
 
-					if reply.Term > rf.currentTerm {
+					if reply.Term > rf.currentTerm { // 任期落后，需要更新
 						rf.currentTerm = reply.Term
 						rf.state = FOLLOWER
 						rf.votedFor = -1
 						rf.votedNum = 0
+						rf.persist()
 						rf.heartbeatTime = time.Now()
 						return
 					}
 
+					if rf.currentTerm != args.Term {
+						return
+					}
+
 					if reply.Success {
+						// 不考虑快照偏移的情况下
+						// rf.matchIndex顶多为len(rf.logs) - 1, rf.matchIndex()顶多为len(rf.logs)
 						rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
 						rf.nextIndex[server] = rf.matchIndex[server] + 1
-						// fmt.Println("Goroutine:", getGID(), rf.matchIndex[server], rf.nextIndex[server])
 
-						for index := rf.getLastIndex(); index > 0; index-- {
+						for index := rf.getLastIndex(); index > rf.lastIncludedIndex; index-- {
 							count := 1
 							for i := range rf.peers {
 								if i != rf.me && rf.matchIndex[i] >= index {
 									count++
 								}
 							}
-							if count > len(rf.peers)/2 && rf.logs[index].Term == rf.currentTerm {
+							if count > len(rf.peers)/2 && rf.restoreLogTerm(index) == rf.currentTerm {
 								rf.commitIndex = index
 								break
 							}

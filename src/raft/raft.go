@@ -18,20 +18,19 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
-// Debug基本原则：启动monitor，根据monitor的输出情况推测出发生的问题(还好只有三个服务器)
-
 type LogEntry struct {
-	Index   int         // 索引，该日志条目在整个日志中的位置
-	Term    int         // 任期，日志条目首次被领导者创建时的任期
-	Command interface{} // 应用于状态机的指令
+	Term    int         // 客户端发送给领导者的任期
+	Command interface{} // 客户端发送的Command
 }
 
 type STATUS int
@@ -57,18 +56,22 @@ type Raft struct {
 	state    STATUS // 节点状态
 	votedNum int    // 获得票数
 
-	currentTerm int        // 节点已知的当前任期
-	votedFor    int        // 当前任期内的Leader
-	logs        []LogEntry // 状态机日志
+	// 持久化变量
+	currentTerm int        // 当前节点的任期
+	votedFor    int        // 投票给谁
+	logs        []LogEntry // 日志
 
-	commitIndex int // commited的最高日志索引
-	lastApplied int //
+	commitIndex int // commited的最高日志索引，表示已经被提交的最高日志条目的真实索引
+	lastApplied int // 已经被应用到状态机的最大日志的真实索引, commitIndex>=lastApplied
 
-	nextIndex  []int // 对于每一个服务器，下一个发送到不同服务器的日志下标
-	matchIndex []int // 当前完成发送到服务器的日志下表
+	nextIndex  []int // 对于每一个服务器，下一个发送到不同服务器的日志的真实index
+	matchIndex []int // 对于每一个服务器，已经发送到不同服务器的最大日志的真实Index
 
-	chanApply     chan ApplyMsg // 用于应用message
-	heartbeatTime time.Time
+	chanApply     chan ApplyMsg // 应用command的通道
+	heartbeatTime time.Time     // 心跳时间
+
+	lastIncludedIndex int // 快照中包含的最后日志的真实Index
+	lastIncludedTerm  int // 快照中包含的最后日志的真实Term
 }
 
 // return currentTerm and whether this server
@@ -80,51 +83,53 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == LEADER
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
-func (rf *Raft) persist() {
+func (rf *Raft) persistData() []byte {
 	// Your code here (3C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
+	data := w.Bytes()
+	return data
 }
 
-// restore previously persisted state.
+func (rf *Raft) persist() {
+	data := rf.persistData()
+	rf.persister.SaveRaftState(data)
+}
+
+// restore previously persisted status.
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if data == nil || len(data) < 1 { // bootstrap without any status?
 		return
 	}
 	// Your code here (3C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
-
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var (
+		currentTerm      int
+		votedFor         int
+		logs             []LogEntry
+		lastIncludeIndex int
+		lastIncludeTerm  int
+	)
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil ||
+		d.Decode(&lastIncludeIndex) != nil ||
+		d.Decode(&lastIncludeTerm) != nil {
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.logs = logs
+		rf.lastIncludedIndex = lastIncludeIndex
+		rf.lastIncludedTerm = lastIncludeTerm
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -140,22 +145,16 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	// 这个应该可以理解为客户端向Leader发起请求
-	// 有一个问题，假设两个task，后面的index大于前面的Index，发送给Follower，但是返回的时候延时
-	// 导致前面的index返回超时，此时commit没有任何影响
+	// 客户端向Leader发起请求
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	if rf.killed() {
+	if rf.killed() || rf.state != LEADER {
 		return -1, -1, false
 	}
-	if rf.state != LEADER {
-		return -1, -1, false
-	} else {
-		index, term := rf.getLastIndex()+1, rf.currentTerm
-		rf.logs = append(rf.logs, LogEntry{index, term, command})
-		return index, term, true
-	}
+	index, term := rf.getLastIndex()+1, rf.currentTerm
+	rf.logs = append(rf.logs, LogEntry{term, command})
+	rf.persist()
+	return index, term, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -194,31 +193,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
-	rf.mu.Lock()
 	rf.state = FOLLOWER
-	rf.votedNum = 0
-
-	rf.currentTerm = 0
 	rf.votedFor = -1
 
-	initlog := LogEntry{0, 0, nil}
-	rf.logs = []LogEntry{initlog} // 初始插入一条默认日志
-
-	rf.commitIndex = 0
-	rf.lastApplied = 0
+	initlog := LogEntry{0, nil} // 默认日志，后续的默认日志的Term用来存储rf.lastIncludedTerm
+	rf.logs = []LogEntry{initlog}
 
 	rf.chanApply = applyCh
-	rf.mu.Unlock()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	if rf.lastIncludedIndex > 0 {
+		rf.lastApplied = rf.lastIncludedIndex
+	}
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.SAE()
 	go rf.commitedTicker()
 
 	// go rf.monitor()
-
 	return rf
 }
 

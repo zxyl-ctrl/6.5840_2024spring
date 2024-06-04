@@ -12,7 +12,8 @@ package raft
 import "sync"
 
 type Persister struct {
-	mu        sync.Mutex
+	// mu        sync.Mutex
+	mu        sync.RWMutex
 	raftstate []byte
 	snapshot  []byte
 }
@@ -28,8 +29,8 @@ func clone(orig []byte) []byte {
 }
 
 func (ps *Persister) Copy() *Persister {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
 	np := MakePersister()
 	np.raftstate = ps.raftstate
 	np.snapshot = ps.snapshot
@@ -37,14 +38,20 @@ func (ps *Persister) Copy() *Persister {
 }
 
 func (ps *Persister) ReadRaftState() []byte {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
 	return clone(ps.raftstate)
 }
 
-func (ps *Persister) RaftStateSize() int {
+func (ps *Persister) SaveRaftState(state []byte) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	ps.raftstate = clone(state)
+}
+
+func (ps *Persister) RaftStateSize() int {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
 	return len(ps.raftstate)
 }
 
@@ -58,13 +65,17 @@ func (ps *Persister) Save(raftstate []byte, snapshot []byte) {
 }
 
 func (ps *Persister) ReadSnapshot() []byte {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
 	return clone(ps.snapshot)
 }
 
 func (ps *Persister) SnapshotSize() int {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
 	return len(ps.snapshot)
+}
+
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
 }

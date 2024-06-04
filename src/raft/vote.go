@@ -36,18 +36,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = FOLLOWER
 		rf.votedFor = -1
 		rf.votedNum = 0
+		rf.persist()
 	}
 
-	if rf.votedFor == -1 || rf.votedFor == args.CandidatedId { // 领导者更替的准则
+	if rf.votedFor == -1 || rf.votedFor == args.CandidatedId {
 		if rf.getLastTerm() > args.LastLogTerm ||
 			(rf.getLastTerm() == args.LastLogTerm && rf.getLastIndex() > args.LastLogIndex) {
 			return
 		}
 		rf.votedFor = args.CandidatedId
-		// rf.currentTerm = args.Term
-		reply.Term = rf.currentTerm // 前面可能更新了任期，需要赋值給Reply
 		reply.VoteGranted = true
 		rf.heartbeatTime = time.Now()
+		rf.persist()
 	}
 }
 
@@ -85,14 +85,13 @@ func (rf *Raft) broadcastRequestVote() {
 						rf.state = FOLLOWER
 						rf.votedFor = -1
 						rf.votedNum = 0
+						rf.persist()
 						return
 					}
 					if reply.VoteGranted && rf.currentTerm == args.Term {
 						rf.votedNum++
 						if rf.votedNum > len(rf.peers)/2 {
 							rf.state = LEADER
-							rf.votedFor = -1
-							rf.votedNum = 0
 							rf.nextIndex = make([]int, len(rf.peers))
 							rf.matchIndex = make([]int, len(rf.peers))
 							tnextIndex := rf.getLastIndex() + 1
@@ -100,7 +99,6 @@ func (rf *Raft) broadcastRequestVote() {
 								rf.nextIndex[i] = tnextIndex
 							}
 							rf.matchIndex[rf.me] = rf.getLastIndex()
-							rf.heartbeatTime = time.Now()
 						}
 					}
 				}
