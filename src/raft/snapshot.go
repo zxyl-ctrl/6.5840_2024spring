@@ -29,12 +29,14 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		}
 
 		rf.lastIncludedTerm = rf.logs[index-rf.lastIncludedIndex].Term
+
 		slogs := []LogEntry{}
 		slogs = append(slogs, LogEntry{Term: rf.lastIncludedTerm, Command: nil})
 		slogs = append(slogs, rf.logs[index+1-rf.lastIncludedIndex:]...)
 
 		rf.lastIncludedIndex = index
 		rf.logs = slogs
+
 		rf.persister.Save(rf.persistData(), snapshot)
 	}
 }
@@ -88,6 +90,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.currentTerm = args.Term
 	reply.Term = args.Term
 	rf.state = FOLLOWER
+
 	rf.persist()
 	rf.heartbeatTime = time.Now()
 

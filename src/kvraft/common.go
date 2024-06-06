@@ -15,18 +15,29 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-}
-
-type PutAppendReply struct {
-	Err Err
+	ReqID    int
+	ClientID int64
+	OpType   int
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ReqID    int
+	ClientID int64
 }
 
-type GetReply struct {
+type Reply struct {
 	Err   Err
 	Value string
 }
+
+const (
+	GET int = iota
+	PUT
+	APPEND
+)
+
+const (
+	timerDelay = 100
+)

@@ -1,12 +1,27 @@
 package raft
 
+import (
+	"crypto/rand"
+	"math/big"
+)
+
 // 不同操作的延时时间(ms)
 const (
+	// 时间太小系统不稳定
+	// LAB4 Quick but RPCs num over 60
 	MaxVoteTime int64 = 100
-	MinVoteTime int64 = 75
+	MinVoteTime int64 = 80
 
-	HeartbeatSleep = 35
+	HeartbeatSleep = 30
 	AppliedSleep   = 15
+
+	clockDriftBound = 2                                                 // 调整单次租约时间增加量的系数
+	deltaAdd        = (MaxVoteTime + MinVoteTime) / 2 / clockDriftBound // 单次租约时间增加量
+
+	// voteRange  int = 80 // vote概率上界
+	// entryRange int = 80 // entry概率上界
+	// voteDelta  int = 5  // 单次概率上涨的值
+	// entryDelta int = 5  // 单次概率上涨的值
 )
 
 // 处理真实日志经过快照偏移得到的实际日志下标
@@ -48,4 +63,13 @@ func maxInt(x, y int) int {
 		return x
 	}
 	return y
+}
+
+// 理想方法是提前生成好一批随机数保存在文件中，提前读取并存储
+// 读完后，从一个随机的下标继续开始读取
+func nrand() int {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return int(x % 100)
 }

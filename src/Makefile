@@ -19,3 +19,11 @@ run_test_raft_temp:
 	#@go test ./rafttemp -run Test.*3B -count=1
 	#@go test ./rafttemp -run Test.*3C -count=1
 	@go test ./rafttemp -run Test.*3D -count=1
+
+run_test_kvraft:
+	@go test ./kvraft -run Test.*4A -count=1
+	@go test ./kvraft -run Test.*4B -count=1
+
+run_test_kvrafttemp:
+	@go test ./kvrafttemp -run Test.*4A -count=1
+	@go test ./kvrafttemp -run Test.*4B -count=1

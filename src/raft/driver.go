@@ -31,8 +31,8 @@ func (rf *Raft) ticker() {
 		oldTime := time.Now()
 		time.Sleep(time.Duration(rand.Int63()%(MaxVoteTime-MinVoteTime)+MinVoteTime) * time.Millisecond)
 		rf.mu.Lock()
-		// 设置Before防止因为执行其他事务，不便于进行选举
-		if rf.heartbeatTime.Before(oldTime) && rf.state != LEADER {
+		// 设置Before防止因为执行其他事务，不便于进行选举 // 在租约时间之后
+		if rf.heartbeatTime.Before(oldTime) && time.Now().After(rf.leaseTime) && rf.state != LEADER {
 			rf.state = CANDIDATE
 			rf.votedFor = rf.me
 			rf.votedNum = 1
@@ -50,6 +50,7 @@ func (rf *Raft) SAE() {
 		time.Sleep(HeartbeatSleep * time.Millisecond)
 		rf.mu.Lock()
 		if rf.state == LEADER {
+			// rf.heartStartTime = time.Now()
 			rf.mu.Unlock()
 			rf.broadcastAppendEntries()
 		} else {
@@ -64,7 +65,8 @@ func (rf *Raft) commitedTicker() { //第0条默认日志不需要提交，否则
 		rf.mu.Lock()
 
 		msgs := []ApplyMsg{}
-		for rf.lastApplied < rf.commitIndex {
+		// 使用!rf.killed防止调用Raft的进程崩了 LAB 4
+		for rf.lastApplied < rf.commitIndex && !rf.killed() {
 			rf.lastApplied += 1
 			log := rf.logs[rf.lastApplied-rf.lastIncludedIndex]
 			msgs = append(msgs, ApplyMsg{

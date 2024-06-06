@@ -70,6 +70,14 @@ type Raft struct {
 	chanApply     chan ApplyMsg // 应用command的通道
 	heartbeatTime time.Time     // 心跳时间
 
+	// 使用租约可以提高性能，但Raft论文作业不建议使用
+	// heartStartTime time.Time // 发送心跳的起始时间
+	leaseCount int       // 统计当前轮次有效心跳是否超过一半
+	leaseTime  time.Time // 租约时间，避免Follower在此期间产生选举，Follower收到合理的leaseTime需要随时更新，Leader保存最大的租约时间用于发送心跳
+
+	// voteP  []int // 概率，表示是否向该节点发送vote请求，表示概率的上界
+	// entryP []int // 概率，表示是否向该节点发送发送entry请求，表示概率上界
+
 	lastIncludedIndex int // 快照中包含的最后日志的真实Index
 	lastIncludedTerm  int // 快照中包含的最后日志的真实Term
 }
@@ -198,6 +206,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	initlog := LogEntry{0, nil} // 默认日志，后续的默认日志的Term用来存储rf.lastIncludedTerm
 	rf.logs = []LogEntry{initlog}
+
+	// rf.voteP = make([]int, len(rf.peers))
+	// rf.entryP = make([]int, len(rf.peers))
+	// for i := range rf.voteP {
+	// 	rf.voteP[i] = voteRange
+	// }
 
 	rf.chanApply = applyCh
 	// initialize from state persisted before a crash

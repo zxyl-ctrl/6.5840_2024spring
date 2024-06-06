@@ -1,6 +1,6 @@
 #!/bin/bash
 # 这个测试还是有问题
-for i in {1..5}
+for i in {1..100}
 do
     echo "Iteration: $i"
     # go test ./raft -run TestBackup3B -count=1
@@ -10,5 +10,7 @@ do
     # go test ./raft -run TestBasicAgree3B -count=1
     # go test ./raft -run TestFollowerFailure3B -count=1
 
-    go test ./raft -run Test.*3D -count=1 
+    # go test ./raft -run Test.*3D -count=1 
+
+    go test ./raft -run TestCount3B -count=1
 done

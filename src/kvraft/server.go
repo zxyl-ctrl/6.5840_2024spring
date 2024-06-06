@@ -1,12 +1,15 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
 const Debug = false
@@ -18,11 +21,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ReqID    int
+	Key      string
+	Value    string
+	ClientID int64
+	OpType   int
 }
 
 type KVServer struct {
@@ -35,19 +42,85 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	kvMap        map[string]string // key/value map
+	reqUniqueMap map[int64]int     // ClientID/ReqID // 用于记录最新访问的ReqID
+	waitChMap    map[int]chan Op   // index / Chan Op
+
+	lastIncludeIndex int
+
+	recycleCh chan int // 定时回收内存
 }
 
+func (kv *KVServer) initState(r *Reply) bool {
+	if kv.killed() {
+		r.Err = ErrWrongLeader
+		return false
+	}
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	_, ifLeader := kv.rf.GetState()
+	if !ifLeader {
+		r.Err = ErrWrongLeader
+		return false
+	}
+
+	return true
 }
 
-func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) Get(args *GetArgs, reply *Reply) {
 	// Your code here.
+	if !kv.initState(reply) {
+		return
+	}
+
+	op := Op{args.ReqID, args.Key, "", args.ClientID, GET}
+	lastIndex, _, _ := kv.rf.Start(op)
+
+	ch := kv.getWaitCh(lastIndex)
+	timer := time.NewTimer(timerDelay * time.Millisecond)
+
+	select {
+	case replyOp := <-ch:
+		if op.ClientID != replyOp.ClientID || op.ReqID != replyOp.ReqID {
+			reply.Err = ErrWrongLeader
+		} else {
+			reply.Err = OK
+			kv.mu.Lock()
+			reply.Value = kv.kvMap[args.Key]
+			kv.mu.Unlock()
+		}
+	case <-timer.C:
+		reply.Err = ErrWrongLeader
+	}
+
+	timer.Stop()
+	kv.recycleCh <- lastIndex
 }
 
-func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) PA_Process(args *PutAppendArgs, reply *Reply) {
 	// Your code here.
+	if !kv.initState(reply) {
+		return
+	}
+
+	op := Op{args.ReqID, args.Key, args.Value, args.ClientID, args.OpType}
+	lastIndex, _, _ := kv.rf.Start(op)
+
+	ch := kv.getWaitCh(lastIndex)
+	timer := time.NewTimer(timerDelay * time.Millisecond)
+
+	select {
+	case replyOp := <-ch:
+		if op.ClientID != replyOp.ClientID || op.ReqID != replyOp.ReqID {
+			reply.Err = ErrWrongLeader
+		} else {
+			reply.Err = OK
+		}
+	case <-timer.C:
+		reply.Err = ErrWrongLeader
+	}
+
+	timer.Stop()
+	kv.recycleCh <- lastIndex
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -96,6 +169,117 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.kvMap = map[string]string{}
+	kv.reqUniqueMap = map[int64]int{}
+	kv.waitChMap = map[int]chan Op{}
+
+	kv.recycleCh = make(chan int, 1<<16)
+
+	snapshot := persister.ReadSnapshot()
+	if len(snapshot) > 0 {
+		kv.DecodeSnapShot(snapshot)
+	}
+
+	go kv.applyMsgHandlerLoop()
+
+	go kv.deletemap()
 
 	return kv
+}
+
+func (kv *KVServer) applyMsgHandlerLoop() {
+	for {
+		if !kv.killed() {
+			msg := <-kv.applyCh
+			if msg.CommandValid && msg.CommandIndex > kv.lastIncludeIndex {
+				index := msg.CommandIndex
+				op := msg.Command.(Op)
+
+				kv.mu.Lock()
+				lastReqID, ok := kv.reqUniqueMap[op.ClientID]
+				if !ok || op.ReqID > lastReqID {
+					switch op.OpType {
+					case PUT:
+						kv.kvMap[op.Key] = op.Value
+					case APPEND:
+						kv.kvMap[op.Key] += op.Value
+					}
+					kv.reqUniqueMap[op.ClientID] = op.ReqID
+				}
+				kv.mu.Unlock()
+
+				if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() > kv.maxraftstate {
+					snapshot := kv.PersistSnapShot()
+					kv.rf.Snapshot(msg.CommandIndex, snapshot)
+				}
+
+				kv.getWaitCh(index) <- op
+			}
+
+			if msg.SnapshotValid {
+				kv.mu.Lock()
+				kv.DecodeSnapShot(msg.Snapshot)
+				kv.lastIncludeIndex = msg.SnapshotIndex
+				kv.mu.Unlock()
+			}
+		}
+	}
+}
+
+func (kv *KVServer) DecodeSnapShot(snapshot []byte) {
+	if snapshot == nil || len(snapshot) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+
+	var kvMap map[string]string
+	var reqUniqueMap map[int64]int
+
+	if d.Decode(&kvMap) == nil && d.Decode(&reqUniqueMap) == nil {
+		kv.kvMap = kvMap
+		kv.reqUniqueMap = reqUniqueMap
+	} else {
+		log.Fatal("[ERROR] in DECODE snapshot!!!")
+	}
+}
+
+func (kv *KVServer) PersistSnapShot() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.kvMap)
+	e.Encode(kv.reqUniqueMap)
+	data := w.Bytes()
+	return data
+}
+
+func (kv *KVServer) getWaitCh(index int) chan Op {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	ch, ok := kv.waitChMap[index]
+	if !ok {
+		kv.waitChMap[index] = make(chan Op, 1)
+		ch = kv.waitChMap[index]
+	}
+	return ch
+}
+
+func (kv *KVServer) deletemap() {
+	for {
+		time.Sleep(400 * time.Millisecond)
+		kv.mu.Lock()
+		flag := true
+		for flag {
+			select {
+			case id := <-kv.recycleCh:
+				delete(kv.waitChMap, id)
+			default:
+				flag = false
+			}
+		}
+		kv.mu.Unlock()
+	}
 }

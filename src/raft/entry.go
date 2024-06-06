@@ -11,6 +11,8 @@ type AppendEntriesArgs struct {
 	PrevLogTerm  int        // 发送日志上一条日志的Term
 	Entries      []LogEntry // Log数组，当发送心跳时为空
 	LeaderCommit int        // 领导者已经Commit的最大日志索引
+
+	LeaseTime time.Time // 领导者当前已知的最长租约时间
 }
 
 type AppendEntriesReply struct {
@@ -35,9 +37,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = args.Term
 
 	rf.state = FOLLOWER
+
 	rf.currentTerm = args.Term
 	rf.persist()
 	rf.heartbeatTime = time.Now() // 设置心跳，避免处理时投票
+
+	rf.leaseTime = args.LeaseTime
 
 	// fmt.Println(getGID(), "1", args, rf.logs)
 
@@ -82,6 +87,15 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) broadcastAppendEntries() {
 	for server := range rf.peers {
 		if server != rf.me { // 不能够判断是否是LEADER，因为没上锁
+
+			// 只有这个函数会使用rf.entryP，不需要上锁
+			// if nrand() > rf.entryP[server] {
+			// 	rf.entryP[server] += entryDelta
+			// 	continue
+			// } else {
+			// 	rf.entryP[server] = entryRange
+			// }
+
 			go func(server int) {
 				rf.mu.Lock()
 
@@ -104,6 +118,7 @@ func (rf *Raft) broadcastAppendEntries() {
 					PrevLogIndex: prevLogIndex,
 					PrevLogTerm:  prevLogTerm,
 					LeaderCommit: rf.commitIndex,
+					LeaseTime:    rf.leaseTime,
 				}
 				if rf.nextIndex[server] <= rf.getLastIndex() {
 					args.Entries = rf.logs[rf.nextIndex[server]-rf.lastIncludedIndex:]
@@ -137,6 +152,8 @@ func (rf *Raft) broadcastAppendEntries() {
 						return
 					}
 
+					rf.leaseCount++
+
 					if reply.Success {
 						// 不考虑快照偏移的情况下
 						// rf.matchIndex顶多为len(rf.logs) - 1, rf.matchIndex()顶多为len(rf.logs)
@@ -164,4 +181,13 @@ func (rf *Raft) broadcastAppendEntries() {
 			}(server)
 		}
 	}
+
+	// 更新租约属性
+	rf.mu.Lock()
+	if rf.leaseCount > len(rf.peers) {
+		// rf.leaseTime = rf.heartStartTime.Add(time.Duration(deltaAdd) * time.Millisecond)
+		rf.leaseTime = rf.leaseTime.Add(time.Duration(deltaAdd) * time.Millisecond)
+	}
+	rf.leaseCount = 0
+	rf.mu.Unlock()
 }

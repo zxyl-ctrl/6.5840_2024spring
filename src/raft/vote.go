@@ -59,6 +59,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) broadcastRequestVote() {
 	for server := range rf.peers {
 		if server != rf.me {
+
+			// 只有这个函数会使用rf.voteP，不需要上锁
+			// if nrand() > rf.voteP[server] {
+			// 	rf.voteP[server] += entryDelta
+			// 	continue
+			// } else {
+			// 	rf.voteP[server] = entryRange
+			// }
+
 			go func(server int) {
 				rf.mu.Lock()
 				args := &RequestVoteArgs{
@@ -99,6 +108,13 @@ func (rf *Raft) broadcastRequestVote() {
 								rf.nextIndex[i] = tnextIndex
 							}
 							rf.matchIndex[rf.me] = rf.getLastIndex()
+
+							rf.leaseTime = time.Now()
+							rf.leaseCount = 0
+
+							// for i := range rf.entryP {
+							// 	rf.entryP[i] = entryRange
+							// }
 						}
 					}
 				}

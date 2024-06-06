@@ -35,6 +35,6 @@ check-%:
 
 upload_github:
 	@git add ./
-	@git commit -m "LAB (3C + 3D)"
+	@git commit -m "LAB (4A + 4B)"
 	@git branch -M main
-	@git push -u origin main
+	@git push --force -u origin main
