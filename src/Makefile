@@ -27,3 +27,13 @@ run_test_kvraft:
 run_test_kvrafttemp:
 	@go test ./kvrafttemp -run Test.*4A -count=1
 	@go test ./kvrafttemp -run Test.*4B -count=1
+
+run_test_shardedKV:
+	@go test ./shardctrler -count=1
+	@go test ./shardkv -run Test.*5A -count=1
+	@go test ./shardkv -run Test.*5B -count=1
+	@go test ./shardkv -run TestChallenge -count=1
+
+run_test_shardedKVtemp:
+	@go test ./shardctrlertemp -count=1
+	@go test ./shardkv -run Test.*5A -count=1

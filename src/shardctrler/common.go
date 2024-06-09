@@ -1,5 +1,7 @@
 package shardctrler
 
+import "time"
+
 //
 // Shard controller: assigns shards to replication groups.
 //
@@ -35,39 +37,57 @@ const (
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers  map[int][]string // new GID -> servers mappings
+	ReqID    int
+	ClientID int64
 }
 
-type JoinReply struct {
-	WrongLeader bool
-	Err         Err
-}
+// type JoinReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs     []int
+	ReqID    int
+	ClientID int64
 }
 
-type LeaveReply struct {
-	WrongLeader bool
-	Err         Err
-}
+// type LeaveReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard    int
+	GID      int
+	ReqID    int
+	ClientID int64
 }
 
-type MoveReply struct {
-	WrongLeader bool
-	Err         Err
-}
+// type MoveReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num      int // desired config number
+	ReqID    int
+	ClientID int64
 }
 
-type QueryReply struct {
+type Reply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
 }
+
+// 相关常量
+const (
+	JOIN int = iota
+	LEAVE
+	MOVE
+	QUERY
+)
+
+var times = []time.Duration{100, 100, 100, 100} // 对应上面类型的延时时间
