@@ -42,7 +42,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.persist()
 	rf.heartbeatTime = time.Now() // 设置心跳，避免处理时投票
 
-	rf.leaseTime = args.LeaseTime
+	if rf.leaseTime.Before(args.LeaseTime) {
+		rf.leaseTime = args.LeaseTime
+	}
 
 	// fmt.Println(getGID(), "1", args, rf.logs)
 
